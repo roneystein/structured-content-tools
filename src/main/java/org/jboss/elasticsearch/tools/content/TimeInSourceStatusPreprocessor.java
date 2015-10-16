@@ -9,8 +9,12 @@ import org.elasticsearch.common.settings.SettingsException;
 import org.elasticsearch.common.xcontent.support.XContentMapValues;
 
 import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import org.joda.time.DateTime;
+import org.joda.time.format.DateTimeFormat;
+import org.joda.time.format.DateTimeFormatter;
+
 
 /**
  * JIRA Content preprocessor which calculates time spent on source status and store as a new field in the changelog
@@ -42,7 +46,6 @@ public class TimeInSourceStatusPreprocessor extends StructuredContentPreprocesso
 	protected String fieldTarget;
 	protected String fieldSourceCreateDate;
 	protected String sourceDateFormat;
-	protected SimpleDateFormat dateFormatter = new SimpleDateFormat();
 
 	@SuppressWarnings("unchecked")
 	@Override
@@ -54,22 +57,94 @@ public class TimeInSourceStatusPreprocessor extends StructuredContentPreprocesso
 		validateConfigurationStringNotEmpty(fieldTarget, CFG_TARGET_FIELD);
 		sourceDateFormat = CFG_DEFAULT_DATE_FORMAT;
 		fieldSourceCreateDate = CFG_DEFAULT_CREATE_DATE_FIELD;
+
 	}
 
-	@Override
-	public Map<String, Object> preprocessData(Map<String, Object> data, PreprocessChainContext chainContext) {
+    @Override
+    public Map<String, Object> preprocessData(Map<String, Object> data, PreprocessChainContext chainContext) {
 
-		Date createDate;
-		Date eventDate;
 
-		if (data == null)
-			return null;
+        DateTime previousDate;
+        DateTime eventDate;
 
-		createDate = handleDateExtractionAndParsing(fieldSourceCreateDate, sourceDateFormat, data, chainContext);
+        int hoursSpent = 0;
 
-		// Gets the changelog
+        if (data == null)
+            return null;
 
-		// Parses the changelog
+        try {
+            previousDate = handleDateExtractionAndParsing(fieldSourceCreateDate, sourceDateFormat, data, chainContext);
+        } catch (DataProblemException e) {
+            return data;
+        }
+
+        // Changelog fields
+        // # of changes : changelog.total
+        // Trans. Time  : changelog.n.created
+        // # of Items   : changelog.n.items (LIST)
+        // Field        : changelog.n.n.field
+        // Source Status: changelog.n.n.fromString
+        // Dest Status  : changelog.n.n.toString
+
+
+        // If the changelog is not empty
+        Object numHistoriesObject = XContentMapValues.extractValue("changelog.total", data);
+        int numHistories = 0;
+
+        if ( ! ValueUtils.isEmpty(numHistoriesObject) ) {
+            numHistories = Integer.parseInt(numHistoriesObject.toString());
+        }
+
+        // Testing
+        StructureUtils.putValueIntoMapOfMaps(data, "fields.NumeroHistories", numHistories);
+
+        // "histories" is the list of changes
+        List<Object> historyList = (List<Object>) XContentMapValues.extractValue("changelog.histories", data);
+
+        // TODO: change for length
+        //for (int i = 0; i < numHistories; i++) {
+        for (int i = 0; i < historyList.size(); i++) {
+
+            // Get this history
+            Map<String, Object> oneHistory = (Map<String,Object>) historyList.get(i);
+            // Get this history's items list
+            List<Object> itemsList = (List<Object>) oneHistory.get("items");
+            int numItems = itemsList.size();
+
+            // Testing: number of items stored
+            oneHistory.put("numberOfItems", numItems);
+
+            // In each item...
+            for (int n = 0; n < itemsList.size(); n++) {
+
+                // Get the item
+                Object itemObject = itemsList.get(n);
+                if ( itemObject instanceof Map ) {
+                    Map<String, Object> item = (Map<String, Object>) itemsList.get(n);
+                    Object fieldValueObj = item.get("field");
+                    if (fieldValueObj instanceof String) {
+                        String fieldValue = (String) fieldValueObj;
+                        if (fieldValue.equals("status")) {
+                            // This is a status transition
+                            // Get the history/change timestamp
+                            try {
+                                eventDate = handleDateParsing(sourceDateFormat, oneHistory.get("created"), chainContext);
+                            } catch (DataProblemException e) {
+                                eventDate = null;
+                            }
+                            //TODO: Computes the date difference and stores it
+                            hoursSpent = 1;
+                            item.put(fieldTarget, hoursSpent);
+
+                            previousDate = eventDate;
+
+                        }
+                    } else { System.out.println("__NOT_INSTANCE_STRING"); }
+                } else { System.out.println("__NOT_INSTANCE_MAP"); }
+            }
+        }
+        return data;
+    }
 
 
 
@@ -87,35 +162,9 @@ public class TimeInSourceStatusPreprocessor extends StructuredContentPreprocesso
 		}
 		 **/
 
-		return data;
-	}
-
-	@SuppressWarnings("unchecked")
-	private void collectValue(Set<Object> values, Object value) {
-		if (value != null) {
-			if (value instanceof Collection) {
-				for (Object o : ((Collection<Object>) value))
-					if ( fieldDeepCopy ) {
-						collectValue(values, StructureUtils.getADeepStructureCopy(o));
-					} else {
-						collectValue(values, o);
-					}
-			} else {
-				if ( fieldDeepCopy ) {
-					values.add(StructureUtils.getADeepStructureCopy(value));
-				} else {
-					values.add(value);
-				}
-			}
-		}
-	}
 
 	public String getFieldTarget() {
 		return fieldTarget;
-	}
-
-	public List<String> getFieldsSource() {
-		return fieldsSource;
 	}
 
 
@@ -127,89 +176,72 @@ public class TimeInSourceStatusPreprocessor extends StructuredContentPreprocesso
 	 * @param cfgDateFormat
 	 * @return parsed date object
 	 */
-	protected Date handleDateExtractionAndParsing(String dateField, String dateFormat, Map<String, Object> data,
+	protected DateTime handleDateExtractionAndParsing(String dateField, String dateFormat, Map<String, Object> data,
 												  PreprocessChainContext chainContext) throws DataProblemException {
 
-		if (dateField == null)
-			return null;
+        if (dateField == null)
+            return null;
 
-		Date resultDate = null;
+        Object dateFieldData = null;
+        if (dateField.contains(".")) {
+            dateFieldData = XContentMapValues.extractValue(dateField, data);
+        } else {
+            dateFieldData = data.get(dateField);
+        }
 
-		Object dateFieldData = null;
-		if (dateField.contains(".")) {
-			dateFieldData = XContentMapValues.extractValue(dateField, data);
-		} else {
-			dateFieldData = data.get(dateField);
-		}
+        return handleDateParsing(dateFormat, dateFieldData, chainContext);
+    }
 
-		if (dateFieldData != null) {
-			if (!(dateFieldData instanceof String)) {
-				String msg = "Value for field '" + dateField + "' is not a String, so can't be parsed to the date object.";
-				addDataWarning(chainContext, msg);
-				throw new DataProblemException();
-			} else {
-				String dateStr = dateFieldData.toString();
-				if (dateStr != null && !dateStr.isEmpty()) {
-					synchronized(dateFormatter) {
-						dateFormatter.applyPattern(dateFormat);
-						try {
-							resultDate = dateFormatter.parse(dateStr);
-						} catch (ParseException e) {
-							String msg = dateField + " parameter value of " + dateStr + " could not be parsed using " + dateFormat
-									+ " format.";
-							addDataWarning(chainContext, msg);
-							throw new DataProblemException();
-						}
-					}
-				}
-			}
-		}
+    /**
+     * An util method to parse date value using the given date format.
+     *
+     * @param dateFormat Date format
+     * @param dateFieldData object from the data field extraction
+     * @param chainContext chainContext
+     * @return parsed date object
+     */
+    protected DateTime handleDateParsing(String dateFormat, Object dateFieldData, PreprocessChainContext chainContext) throws DataProblemException {
 
-		return resultDate;
-	}
+        if (dateFieldData == null)
+            return null;
 
-	/**
-	 * Parses a JIRA changelog for transitions, calculates the time spent in source field, adds it as number of hours.
-	 *
-	 * @param data with the changelog structure
-	 * @return modified data
-	 */
-	@SuppressWarnings("unchecked")
-	public static Object getADeepStructureCopy( Object data ) {
+        DateTime resultDate = null;
 
-		if ( root==null ) {
+        DateTimeFormatter dateFormatter = DateTimeFormat.forPattern(dateFormat);
 
-			return null;
+        if (dateFieldData != null) {
+            if (!(dateFieldData instanceof String)) {
+                String msg = "Value for field is not a String, so can't be parsed to the date object.";
+                addDataWarning(chainContext, msg);
+                throw new DataProblemException();
+            } else {
+                String dateStr = dateFieldData.toString();
+                if (dateStr != null && !dateStr.isEmpty()) {
+//                    synchronized (dateFormatter) {
+//                        dateFormatter.applyPattern(dateFormat);
 
-		} else if ( root instanceof List ) {
+                        try {
+                            resultDate = dateFormatter.parseDateTime(dateStr);
+                        } catch (Exception e) {
+                            String msg = "Parameter value of " + dateStr + " could not be parsed using " + dateFormat
+                                    + " format.";
+                            addDataWarning(chainContext, msg);
+                            throw new DataProblemException();
+                        }
+//                    }
+                }
+            }
+        }
 
-			List<Object> rootList = (List<Object>)root;
-			List<Object> copy = new LinkedList<Object>();
+        return resultDate;
+    }
 
-			for ( Object elem : rootList ) {
-				Object copiedElem = getADeepStructureCopy(elem);
-				if ( copiedElem==null ) continue;
-				copy.add(copiedElem);
-			}
-			return copy;
 
-		} else if ( root instanceof Map ) {
-
-			Map<String,Object> rootMap = (Map<String,Object>)root;
-			Map<String,Object> copy = new LinkedHashMap<String,Object>(rootMap.size());
-
-			for ( String key : rootMap.keySet() ) {
-				Object copiedElem = getADeepStructureCopy( rootMap.get(key) );
-				if ( copiedElem==null ) continue;
-				copy.put( key, copiedElem );
-			}
-			return copy;
-
-		} else {
-
-			// Since it's neither a List nor a Map, it has to be an immutable value which we can copy by reference.
-			return root;
-		}
-	}
+    /**
+     * An utility exception to handle data exceptions navigation nicely in this preprocessor.
+     */
+    class DataProblemException extends Exception {
+        private static final long serialVersionUID = 1L;
+    }
 
 }
