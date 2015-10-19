@@ -15,8 +15,8 @@ public class TestTimeCalculation {
     public static void main(String[] args) {
 
         String sourceDateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ";
-        String firstDateString = "2014-10-13T13:42:55.837-0300";
-        String lastDateString = "2014-10-13T14:30:55.837-0300";
+        String firstDateString = "2014-10-16T10:00:00.000-0300";
+        String lastDateString = "2014-10-16T18:00:00.000-0300";
 
         //TESTING
         System.out.println("Start date: " + firstDateString);
