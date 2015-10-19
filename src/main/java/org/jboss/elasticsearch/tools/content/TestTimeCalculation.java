@@ -1,10 +1,7 @@
 
-import org.joda.time.DateTime;
-import org.joda.time.Hours;
-import org.joda.time.Weeks;
+import org.joda.time.*;
 import org.joda.time.format.DateTimeFormat;
 import org.joda.time.format.DateTimeFormatter;
-import org.joda.time.Interval;
 
 
 /**
@@ -17,61 +14,137 @@ public class TestTimeCalculation {
 
     public static void main(String[] args) {
 
-        String CFG_DEFAULT_DATE_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSSZ";
-        String sourceDateFormat;
-        String startDateString = "2015-10-06T13:42:55.837-0300";
-        String endDateString = "2015-10-13T13:42:55.837-0300";
+        String sourceDateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ";
+        String firstDateString = "2014-10-13T13:42:55.837-0300";
+        String lastDateString = "2014-10-13T14:30:55.837-0300";
 
-        sourceDateFormat = CFG_DEFAULT_DATE_FORMAT;
+        //TESTING
+        System.out.println("Start date: " + firstDateString);
+        System.out.println("End date  : " + lastDateString);
 
-        DateTime startDate;
-        DateTime endDate;
+        int workingDayEndHour = 18;
+        int workingDayStartHour = 8;
+        int workingHoursPerDay = 8;
+
+        int totalWorkedHours=0;
+        Duration totalWorkedDuration = new Duration(Duration.ZERO);
+
+        DateTime firstDate;
+        DateTime lastDate;
 
         DateTimeFormatter dateFormatter = DateTimeFormat.forPattern(sourceDateFormat);
 
-        startDate = dateFormatter.parseDateTime(startDateString);
-        endDate = dateFormatter.parseDateTime(endDateString);
+        firstDate = dateFormatter.parseDateTime(firstDateString);
+        lastDate = dateFormatter.parseDateTime(lastDateString);
 
-        Interval intervalo = new Interval(startDate, endDate);
-        Hours horas = Hours.hoursIn(intervalo);
+        // The upper limit of the working time in the start day
+        DateTime workingEndFirstDate = new DateTime(firstDate.getYear(),
+                firstDate.getMonthOfYear(),
+                firstDate.getDayOfMonth(),
+                workingDayEndHour, 0,
+                firstDate.getZone());
 
-        System.out.println("horas no intervalo: " + horas.getHours());
+        // The second day, same time
+        DateTime nextFirstDate = firstDate.plusDays(1);
 
+        // The second day, starting working hours
+        DateTime workingStartNextDay = new DateTime(nextFirstDate.getYear(),
+                nextFirstDate.getMonthOfYear(),
+                nextFirstDate.getDayOfMonth(), 0, 0,
+                nextFirstDate.getZone());
 
-        // Semanas no intervalo
-        org.joda.time.Weeks semanas = org.joda.time.Weeks.weeksIn(intervalo);
-
-        // Dias de finais de semana a serem descontados
-        int numWeeks = semanas.getWeeks();
-
-        // feriados
-
-
-
-
-
-        /*
-        Algoritmo para calculo poderia ser:
-        pego a data aleatoria no dia
-        calculo o tempo até as 18h
-        calculo quantos dias uteis se passam até o proximo momento
-
-            sem contar os finais de semana (calculo quantas semanas se passam e tiro 2 dias de cada)
-
+        // The last day, starting working hours
+        DateTime workingStartLastDate = new DateTime(lastDate.getYear(),
+                lastDate.getMonthOfYear(),
+                lastDate.getDayOfMonth(),
+                workingDayStartHour, 0,
+                lastDate.getZone()
+                );
+        
 
 
-            sem contar os feriados (1 intervalo para cada feriado e verificamos os intervalos de cada um)
+        // The entire interval
+        Interval intervalFull = new Interval(firstDate, lastDate);
 
-            biblioteca
+        // The max interval in the start day, in business hours only
+        Interval businessWorkedHours = new Interval(firstDate, workingEndFirstDate);
 
+        // Total worked hours and Duration straight
+        Hours workedHours = Hours.hoursIn(intervalFull);
+        Duration workedDuration = new Duration(intervalFull.getStart().toInstant(), intervalFull.getEnd().toInstant());
 
+        // Testing
+        System.out.println("horas no intervalo: " + workedHours.getHours());
 
+        
+        // Does the the interval ends in the same day?
+        if ( ! intervalFull.contains(workingStartNextDay.toInstant()) ) {
+            // Does the interval ends after the business hours?
+            // if so, treats as if it ended in the end of business hours
+            if (intervalFull.contains(workingEndFirstDate.toInstant())) {
+                totalWorkedHours = Hours.hoursIn(businessWorkedHours).getHours();
+                totalWorkedDuration = totalWorkedDuration.plus( new Duration(
+                                businessWorkedHours.getStart().toInstant(),
+                                businessWorkedHours.getEnd().toInstant() ));
 
-        calculo o tempo util até o momento no dia final
+                System.out.println("Only same day worked hours (extra): " + Integer.toString(totalWorkedHours));
+            } else {
+                // Else, the total number of hours will be the reported by the interval
+                totalWorkedHours = workedHours.getHours();
+                totalWorkedDuration = workedDuration;
 
-         */
+                System.out.println("Only same day worked hours: " + Integer.toString(totalWorkedHours));
+            }
+        } else {
+            
+            //Gets the hours worked in the start day
+            totalWorkedHours = Hours.hoursIn(businessWorkedHours).getHours();
+            totalWorkedDuration = totalWorkedDuration.plus(new Duration(
+                    businessWorkedHours.getStart().toInstant(),
+                    businessWorkedHours.getEnd().toInstant()));
+            System.out.println("Hours in the first day: " + Integer.toString(totalWorkedHours));
+            
+            //Gets the hours worked in the end day
+            Interval lastBusinessWorkedHours;
+            if ( workingStartLastDate.compareTo(lastDate.toInstant()) < 0  ) {
+                lastBusinessWorkedHours = new Interval(workingStartLastDate, lastDate);
+            } else {
+                lastBusinessWorkedHours = new Interval(workingStartLastDate, workingStartLastDate);
+            }
+
+            totalWorkedHours += Hours.hoursIn(lastBusinessWorkedHours).getHours();
+            totalWorkedDuration = totalWorkedDuration.plus(new Duration(
+                    lastBusinessWorkedHours.getStart().toInstant(),
+                    lastBusinessWorkedHours.getEnd().toInstant() ));
+            System.out.println("Hours in the last day: " + Integer.toString(totalWorkedHours));
+
+            //Hours worked in between
+            int hoursInBetween = (Days.daysIn(intervalFull).getDays()
+                    // minus first and last day
+                    - 2
+                    // minus saturdays and sundays
+                    - (Weeks.weeksIn(intervalFull).getWeeks() * 2 )) * workingHoursPerDay;
+            totalWorkedHours += hoursInBetween;
+            totalWorkedDuration = totalWorkedDuration.plus((new Period(0,0,0,0,hoursInBetween,0,0,0)).toStandardDuration());
+
+            System.out.println("Total # of days in between    : "
+                    + Days.daysIn(intervalFull).getDays());
+            System.out.println("Total # of working days in btw: "
+                    + (Days.daysIn(intervalFull).getDays() - 2 - (Weeks.weeksIn(intervalFull).getWeeks() * 2 )));
+
+            //TODO: subtract lunch time
+            //TODO: subtract all the hollidays in between
+
+        }
+
+        System.out.println("Total # working hours: " + Integer.toString(totalWorkedHours) );
+        System.out.println("Total # working hours (Duration): " + Long.toString(totalWorkedDuration.getStandardHours()) );
+        System.out.println("Total # working minutes (Duration): " + Long.toString(totalWorkedDuration.getStandardMinutes()) );
+
 
     }
+
+
 
 
 }
